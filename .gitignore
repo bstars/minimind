@@ -2,3 +2,7 @@
 log_*/
 
 .vscode/
+.codex/
+.agents/
+**/__pycache__/
+*.py[cod]

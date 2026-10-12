@@ -111,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--print_every", type=int, default=8)
+    parser.add_argument("--save_every", type=int, default=5000)
     parser.add_argument("--compile", action="store_true")
 
 
@@ -262,11 +263,24 @@ if __name__ == "__main__":
                 print(
                     f"epoch {epoch + 1}/{args.epochs} | "
                     f"step {global_step}/{total_steps} | "
-                    f"ce loss {mean_cross_ent_loss:.4f} | "
+                    f"ent loss {mean_cross_ent_loss:.4f} | "
                     f"aux loss {mean_aux_loss:.4f} | "
                     f"grad_norm {grad_norm.item():.4f} | "
                     f"lr {current_lr:.2e}"
                 )
+
+            if global_step % args.save_every == 0:
+                save_path = os.path.join(args.ckpt_dir, "%d.pth" % (global_step))
+                
+                if args.compile:
+                    raw_model = getattr(model, "_orig_mod", model)
+                    state_dict = raw_model.state_dict()
+                    
+                else:
+                    state_dict = model.state_dict()
+            
+                state_dict = {k: v.half().cpu() for k, v in state_dict.items()}
+                torch.save(state_dict, save_path)
 
 
     save_path = os.path.join(args.ckpt_dir, args.save_weight)
