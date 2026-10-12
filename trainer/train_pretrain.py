@@ -56,7 +56,12 @@ class PretrainDataset(Dataset):
             tokens = tokens + [self.tokenizer.pad_token_id] * (self.max_length - len(tokens))
         else:
             # Fill the sequence, but do not label the artificial cutoff as EOS.
-            tokens = [self.tokenizer.bos_token_id, *content[:self.max_length - 1]]
+            full_tokens = [self.tokenizer.bos_token_id, *content, self.tokenizer.eos_token_id]
+
+            max_start = len(full_tokens) - self.max_length
+            start = torch.randint(0, max_start + 1, (1,)).item()
+            tokens = full_tokens[start : start + self.max_length]
+
         input_ids = torch.tensor(tokens, dtype=torch.long)
         labels = input_ids.clone()
         labels[input_ids == self.tokenizer.pad_token_id] = -100

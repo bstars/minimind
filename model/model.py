@@ -123,12 +123,13 @@ class MinimindModel(nn.Module):
 
         kv_cache = []
         aux_loss = 0.
+        
         for layer, past_kv_step in zip(self.layers, past_kv):
             x, kv_cache_step = layer(x, position_embeddings, past_kv_step, attention_mask, non_pad_mask, return_cache)
             kv_cache.append(kv_cache_step)
 
-            if isinstance(layer.mlp, MoEFeedForward):
-                aux_loss += layer.mlp.aux_loss
+            
+            aux_loss += layer.mlp.aux_loss
 
         x = self.norm(x)
 

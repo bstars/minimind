@@ -181,8 +181,10 @@ class FeedForward(nn.Module):
         self.up_proj = nn.Linear(config.hidden_dim, config.intermediate_dim, bias=False)
         self.down_proj = nn.Linear(config.intermediate_dim, config.hidden_dim, bias=False)
         self.act_fun = nn.SiLU()
+        self.aux_loss = None
 
     def forward(self, x: torch.Tensor, non_pad_mask=None):
+        self.aux_loss = x.new_zeros(1).squeeze()
         return self.down_proj(
             self.act_fun(self.gate_proj(x)) * self.up_proj(x)
         )
