@@ -13,6 +13,7 @@ class MinimindConfig:
     # Attention
     num_query_heads: int = 8
     num_kv_heads: int = 4
+    flash_attn: bool = True
     
     rope_theta: float = 1e6
     rope_scaling: dict | None = None
