@@ -43,87 +43,48 @@ class PackedPretrainDataset(Dataset):
       attention_mask: [L, L], bool; True means the query may attend to the key
       non_pad_mask:   [L], bool
 
-    Rows are causal and isolated by sample. The final row is padded if needed.
+    Build one packed row on demand:
+      1. Start with samples[index].
+      2. Fill remaining space with randomly selected samples.
+      3. Pass max_length + 1 tokens to _make_pack for label shifting.
     """
 
-    def __init__(self, tokenizer, data_path: str, max_length=512, max_pos=32768, split="train", subset=10000):
+    def __init__(
+        self,
+        tokenizer,
+        data_path: str,
+        max_length=512,
+        max_pos=32768,
+        split="train",
+        subset=10000,
+    ):
         super().__init__()
 
+        if max_length < 1:
+            raise ValueError("max_length must be at least 1")
+        if max_pos < 2:
+            raise ValueError("max_pos must be at least 2")
+
+        self.tokenizer = tokenizer
         self.max_length = max_length
         self.max_pos = max_pos
         self.pad_token_id = tokenizer.pad_token_id
-        samples = load_dataset("json", data_files=data_path, split=split)
 
-        if subset > 0:
-            samples = samples.select(range(min(subset, len(samples))))
-
-        tokenized = samples.map(
-            tokenize_batch,
-            batched=True,
-            batch_size=1024,
-            num_proc=8,
-            fn_kwargs={"tokenizer": tokenizer},
-            remove_columns=samples.column_names,
-            load_from_cache_file=True,
-            desc="Tokenizing",
+        self.samples = load_dataset(
+            "json", data_files=data_path, split=split
         )
 
-        self.packs = []
-        current_input_ids = []
-        current_label_ids = []
-        current_position_idxs = []
-        current_segment_ids = []
-        
+        if subset > 0:
+            self.samples = self.samples.select(
+                range(min(subset, len(self.samples)))
+            )
 
-        segment_id = 0
-        for sample in tqdm(tokenized, desc="Packing"):
-            sample_input_ids = [
-                tokenizer.bos_token_id,
-                *sample["input_ids"],
-                tokenizer.eos_token_id,
-            ]
-            sample_input_ids = sample_input_ids[:self.max_pos]
+        if len(self.samples) == 0:
+            raise ValueError("Dataset contains no samples")
 
 
-            sample_label_ids = sample_input_ids.copy()
-            sample_label_ids[0] = -100  # Do not predict BOS
-
-            # Existing packing logic continues here.
-            offset = 0
-            while offset < len(sample_input_ids):
-                take = min(
-                    self.max_length + 1 - len(current_input_ids),
-                    len(sample_input_ids) - offset,
-                )
-
-                current_input_ids.extend(sample_input_ids[offset: offset+take])
-                current_label_ids.extend(sample_label_ids[offset: offset+take])
-                current_position_idxs.extend(range(offset, offset+take))
-                current_segment_ids.extend([segment_id] * take)
-
-                offset += take
-
-                if len(current_input_ids) == self.max_length + 1:
-                    # self.packs.append(self._make_pack(current_input_ids, current_labels, current_position_idxs, current_segment_ids))
-                    self.packs.append((current_input_ids, current_label_ids, current_position_idxs, current_segment_ids))
-
-                    current_input_ids = []
-                    current_label_ids = []
-                    current_position_idxs = []
-                    current_segment_ids = []
-            segment_id += 1
-
-        # Ignoring the last data
-        # Essentialy no data padded
-        # if len(current_input_ids) > 0:
-        #     self.packs.append(
-        #         self._make_pack(
-        #             current_input_ids,
-        #             current_labels,
-        #             current_position_idxs,
-        #             current_segment_ids,
-        #         )
-        #     )
+    def __len__(self):
+        return len(self.samples)
 
     def _make_pack(self, input_ids, label_ids, position_idxs, segment_ids):
         """
@@ -168,12 +129,66 @@ class PackedPretrainDataset(Dataset):
 
         return input_ids, label_ids, position_idxs, attention_mask, non_pad_mask
 
-    def __len__(self):
-        return len(self.packs)
 
     def __getitem__(self, index):
-        input_ids, labels, position_idxs, segment_ids = self.packs[index]
-        return self._make_pack(input_ids, labels, position_idxs, segment_ids)
+
+        current_input_ids = []
+        current_label_ids = []
+        current_position_idxs = []
+        current_segment_ids = []
+
+        target_length = self.max_length + 1
+        sample_index = index
+        segment_id = 0
+
+        while len(current_input_ids) < target_length:
+            sample = self.samples[sample_index]
+
+            token_ids = self.tokenizer(
+                str(sample["text"]),
+                add_special_tokens=False,
+                truncation=False,
+                padding=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )["input_ids"]
+
+            sample_input_ids = [self.tokenizer.bos_token_id, *token_ids, self.tokenizer.eos_token_id]
+            sample_input_ids = sample_input_ids[:self.max_pos]
+
+            sample_label_ids = sample_input_ids.copy()
+            sample_label_ids[0] = -100  # Do not predict BOS
+
+            offset = 0
+            take = min(
+                target_length - len(current_input_ids),
+                len(sample_input_ids) - offset,
+            )
+
+            current_input_ids.extend(
+                sample_input_ids[offset:offset + take]
+            )
+            current_label_ids.extend(
+                sample_label_ids[offset:offset + take]
+            )
+            current_position_idxs.extend(
+                range(offset, offset + take)
+            )
+            current_segment_ids.extend([segment_id] * take)
+
+            segment_id += 1
+
+            if len(current_input_ids) < target_length:
+                sample_index = torch.randint(
+                    len(self.samples), size=(1,)
+                ).item()
+
+        return self._make_pack(
+            current_input_ids,
+            current_label_ids,
+            current_position_idxs,
+            current_segment_ids,
+        )
 
 def get_lr(
     current_step: int,
