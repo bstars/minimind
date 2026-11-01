@@ -205,3 +205,57 @@ class FeedForward(nn.Module):
         return self.down_proj(
             self.act_fun(self.gate_proj(x)) * self.up_proj(x)
         )
+
+class MoEFeedForward(nn.Module):
+    def __init__(self, config: MinimindConfig):
+        super().__init__()
+        self.num_experts_per_token = config.num_experts_per_token
+        self.num_experts = config.num_experts
+        self.gate = nn.Linear(config.hidden_dim, config.num_experts, bias=False)
+        self.experts = nn.ModuleList([
+            FeedForward(config) for _ in range(config.num_experts)
+        ])
+        self.aux_loss = None
+
+    def forward(self, x, non_pad_mask=None):
+        """
+        :param x: [batch_size, seq_len, hidden_dim]
+        """
+        batch_size, seq_len, hidden_dim = x.shape
+        x_flat = x.view(-1, hidden_dim)
+
+        soft_weights = F.softmax(self.gate(x_flat), dim=-1) # [batch_size * seq_len, num_experts]
+        topk_weight, topk_idx = torch.topk(soft_weights, k=self.num_experts_per_token, dim=-1, sorted=False) # [batch_size * seq_len, k]
+        topk_weight = topk_weight / (topk_weight.sum(dim=-1, keepdim=True) + 1e-20)
+
+        y = torch.zeros_like(x_flat)
+        for i, expert in enumerate(self.experts):
+            mask = (topk_idx == i)
+            token_idx = mask.any(dim=-1).nonzero().flatten() # [num_token,]
+
+            if token_idx.numel() > 0: 
+                # expert is used
+                weight = topk_weight[mask].view(-1, 1) # [num_token, ]
+                y.index_add_(
+                    0, 
+                    token_idx, 
+                    (expert(x_flat[token_idx]) * weight).to(y.dtype)
+                )
+            elif self.training:
+                # if expert is not used, make the expert's parameters to have 0 gradient instead of none
+                y[0, 0] += 0 * sum(p.sum() for p in expert.parameters())
+
+        # aux loss
+        if self.training:
+            valid = non_pad_mask.reshape(-1).bool()
+            aux_topk_idx = topk_idx[valid]
+            aux_soft_weights = soft_weights[valid]
+            expert_counts = torch.bincount(aux_topk_idx.reshape(-1), minlength=self.num_experts).to(soft_weights.dtype)
+            load = expert_counts / aux_topk_idx.numel()
+            self.aux_loss = (load * aux_soft_weights.mean(0)).sum() * self.num_experts
+
+        else:
+            self.aux_loss = soft_weights.new_zeros(1).squeeze()
+
+
+        return y.view(batch_size, seq_len, hidden_dim)

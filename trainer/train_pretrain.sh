@@ -1,0 +1,14 @@
+python -m trainer.train_pretrain \
+    --data_path /home/jiarui/Desktop/Dataset/Minimind/pretrain_t2t_mini.jsonl \
+    --tokenizer_dir tokenizer \
+    --ckpt_dir ckpts \
+    --epochs 64 \
+    --batch_size 8 \
+    --learning_rate 5e-4 \
+    --min_lr_ratio 0.1 \
+    --warmup_ratio 0.01 \
+    --accumulation_steps 2 \
+    --grad_clip 1.0\
+    --weight_decay 0.01 \
+    --max_length 512 \
+    --subset 64

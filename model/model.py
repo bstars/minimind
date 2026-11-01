@@ -7,7 +7,7 @@ from typing import Tuple, List
 
 
 from model.model_config import MinimindConfig
-from model.modules import precompute_freqs_cis, Attention, FeedForward
+from model.modules import precompute_freqs_cis, Attention, FeedForward, MoEFeedForward
 
 class MinimindBlock(nn.Module):
     def __init__(self, layer_id:int, config:MinimindConfig):
@@ -17,8 +17,8 @@ class MinimindBlock(nn.Module):
         self.input_layernorm = nn.RMSNorm(config.hidden_dim, eps=config.rms_norm_eps)
         self.post_attention_layernorm = nn.RMSNorm(config.hidden_dim, eps=config.rms_norm_eps)
 
-        self.mlp = FeedForward(config)
-        # self.mlp = MoEFeedForward(config) if config.use_moe else FeedForward(config)
+        # self.mlp = FeedForward(config)
+        self.mlp = MoEFeedForward(config) if config.use_moe else FeedForward(config)
 
     def forward(
         self, 
@@ -99,12 +99,11 @@ class MinimindModel(nn.Module):
         In training mode, past_kv should be None, and attention_mask is not None, attention_mask should already take care of causality
         In inference mode, past_kv might not be None, attention_mask is None, causality is taken care by this function
 
-        :param x: [batch_size, seq_len, hidden_dim]
+        :param input_ids: [batch, seq_len]
         :param past_kv: [(k1,v1), (k2,v2), ... ]
-                ki: [batch_size, past_seq_len, head_dim]
-                vi: [batch_size, past_seq_len, head_dim]
-
-
+            ki: [batch_size, past_seq_len, head_dim]
+            vi: [batch_size, past_seq_len, head_dim]
+        
         :param attention_mask: [batch_size, seq_len, seq_len]
         :param non_pad_mask: [batch_size, seq_len]
         :param return_cache: bool
@@ -113,7 +112,10 @@ class MinimindModel(nn.Module):
         :return kv_cache: [(k1,v1), (k2,v2), ... ]
             ki: [batch_size, past_len + seq_len, head_dim]
             vi: [batch_size, past_len + seq_len, head_dim]
+        :return aux_loss: torch scalar
+
         """
+
         if len(past_kv) != len(self.layers): raise ValueError("past_kv must contain one entry per layer")
 
         x = self.dropout(self.word_embedding(input_ids))
@@ -132,3 +134,56 @@ class MinimindModel(nn.Module):
 
         x = self.norm(x)
         return x, kv_cache, aux_loss
+
+class MinimindCausalLLM(nn.Module):
+    def __init__(self, config:MinimindConfig):
+        super().__init__()
+        self.config = config
+        self.model = MinimindModel(self.config)
+        self.llm_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
+        self.apply(self._init_weights)
+        self.llm_head.weight = self.model.word_embedding.weight
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(
+        self, 
+        input_ids: torch.Tensor, 
+        position_idxs: torch.Tensor,
+        past_kv: List[Tuple[torch.Tensor]] | List[None], 
+        attention_mask: torch.Tensor | None = None, 
+        non_pad_mask: torch.Tensor | None = None,
+        return_cache=False,
+        logits_to_keep:int=0
+    ):
+        """
+        :param input_ids: [batch_size, seq_len]
+        :param past_kv: 
+            [(k1,v1), (k2,v2), ... ]
+            ki: [batch_size, past_seq_len, head_dim]
+            vi: [batch_size, past_seq_len, head_dim]
+        :param attention_mask: [batch_size, seq_len, seq_len]
+        :param non_pad_mask: [batch_size, seq_len]
+        :param return_cache: bool
+        :param logits_to_keep: int
+
+        :return logits: [batch_size, ret_len, vocab_size]
+        :return kv_cache: [(k1,v1), (k2,v2), ... ]
+            ki: [batch_size, past_len + seq_len, head_dim]
+            vi: [batch_size, past_len + seq_len, head_dim]
+        """
+
+        x, kv_cache, aux_loss = self.model(input_ids, position_idxs, past_kv, attention_mask, non_pad_mask, return_cache)
+
+        # x: [batch_size, seq_len, hidden_dim]
+        logits = self.llm_head(x)
+        return logits[:, -logits_to_keep:, :], kv_cache, aux_loss
+        

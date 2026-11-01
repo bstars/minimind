@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class MinimindConfig:
     # Model
     hidden_dim: int = 768
-    num_hidden_layers: int = 8
+    num_hidden_layers: int = 12
     vocab_size: int = 6400
 
     # Attention
