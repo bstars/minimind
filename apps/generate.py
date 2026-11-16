@@ -6,8 +6,7 @@ import einops
 from typing import Tuple, List
 from transformers import AutoTokenizer, TextStreamer
 
-import sys
-sys.path.append("..")
+
 from model.model_config import MinimindConfig
 from model.model import MinimindCausalLLM
 
@@ -102,7 +101,7 @@ if __name__ == "__main__":
     model.load_state_dict(state_dict)
 
     ret = generate(
-        "Deep Learning is",
+        "Machine Learning",
         tokenizer=tokenizer,
         model=model, 
         max_new_token=350,

@@ -1,0 +1,16 @@
+python -m trainer.train_sft \
+    --data_path /home/jiarui/Desktop/Dataset/Minimind/sft_t2t_mini.jsonl \
+    --tokenizer_dir tokenizer \
+    --ckpt_dir ckpts \
+    --epochs 64 \
+    --batch_size 2 \
+    --accumulation_steps 1 \
+    --learning_rate 5e-4 \
+    --min_lr_ratio 0.1 \
+    --warmup_ratio 0.01 \
+    --grad_clip 1.0 \
+    --weight_decay 0.01 \
+    --max_length 128 \
+    --subset 8 \
+    --num_workers 0 \
+    --print_every 1
