@@ -1,6 +1,9 @@
 import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import os
+import requests
+from ddgs import DDGS
 
 
 # Tool implementations
@@ -25,6 +28,7 @@ def random_number(min: int = 0, max: int = 100) -> dict:
     return {"result": random.randint(min, max)}
 
 
+
 # Signatures shown to the LLM through apply_chat_template(tools=...).
 
 TOOLS_SIGNATURE = [
@@ -39,7 +43,7 @@ TOOLS_SIGNATURE = [
                     "timezone": {
                         "type": "string",
                         "description": (
-                            "时区名称，例如 Asia/Shanghai、America/New_York"
+                            "时区名称，例如 Asia/Shanghai,America/New_York"
                         ),
                         "default": "America/New_York",
                     },

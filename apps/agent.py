@@ -13,6 +13,7 @@ class ColoredStreamer(TextStreamer):
     COLORS = [
         (("<think>", "</think>"), "\033[90m"),
         (("<tool_call>", "</tool_call>"), "\033[90m"),
+        (("<tool_response>", "</tool_response>"), "\033[90m")
     ]
 
     def on_finalized_text(self, text, stream_end=False):
@@ -62,16 +63,19 @@ class Agent:
         model: MinimindCausalLLM,
         tokenizer: AutoTokenizer,
         device,
+        enable_tools=False
     ):
 
         self.device = torch.device(device)
         self.model = model.to(self.device).eval()
         self.tokenizer = tokenizer
+        self.enable_tools = enable_tools
 
-        self.temperature = 1.0
+        self.temperature = 0.99
         self.top_p = 0.95
         self.top_k = 20
         self.max_generate = 512
+        self.max_tool_round = 4
 
         self.messages = [{"role": "system", "content": ""}]
         self.streamer = ColoredStreamer(tokenizer, skip_prompt=False, skip_special_tokens=True)
@@ -110,9 +114,12 @@ class Agent:
         prompt = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=False
+            add_generation_prompt=False,
+            tools=TOOLS_SIGNATURE if self.enable_tools else None
         )
+
         prompt += "<|im_start|>assistant\n"
+        # prompt += "<think>\n\n</think>\n\n"
 
         input_ids = self.tokenizer(prompt, add_special_tokens=False, truncation=False).input_ids
         input_ids = torch.tensor([input_ids], dtype=torch.long, device=self.device)
@@ -153,25 +160,50 @@ class Agent:
         )
         
 
-    def respond(self, user_input: str):
-        # Commit the turn to history only after generation succeeds.
-        messages = self.messages + [
-            {"role": "user", "content": user_input}
-        ]
-        print("Assistant: ", end="", flush=True)
-        response = self.generate(messages)
-        messages.append({"role": "assistant", "content": response})
-        self.messages = messages
-
     def run(self):
         while True:
             user_input = input(("=" * 50) + "\nYou: ").strip()
-            # self.respond(user_input)
 
             messages = self.messages + [{"role": "user", "content": user_input}]
-            print("Assistant: ", end="", flush=True)
-            response = self.generate(messages)
-            messages.append({"role": "assistant", "content": response})
+
+            for round_idx in range(self.max_tool_round+1):
+
+                print("Assistant: ", end="", flush=True)
+                response = self.generate(messages)
+                messages.append({"role": "assistant", "content": response})
+
+                # Process tool call
+                if not self.enable_tools: break
+                calls = parse_tool_calls(response)
+                if len(calls) == 0: break
+                if round_idx == self.max_tool_round: raise RuntimeError("Tool call: Max tool round")
+
+                for call in calls:
+                    name = call["name"]
+                    arguments = call["arguments"]
+
+                    if not isinstance(name, str) or name not in TOOLS_FUNCTIONS:
+                        raise ValueError(f"Unknown tool: {name}")
+                    if not isinstance(arguments, dict):
+                        raise ValueError("Tool arguments must be an object.")
+
+                    result = TOOLS_FUNCTIONS[name](**arguments)
+                    result = json.dumps(result, ensure_ascii=False)
+                    messages.append({
+                        "role": "tool",
+                        "content": result,
+                    })
+
+                    self.streamer.put(
+                        self.tokenizer(
+                            "<tool_response>\n" + result + "\n</tool_response>\n",
+                            add_special_tokens=False,
+                            truncation=False,
+                            return_tensors="pt",
+                        ).input_ids
+                    )
+
+
             self.messages = messages
 
 if __name__ == "__main__":
@@ -188,7 +220,7 @@ if __name__ == "__main__":
     model.load_state_dict(state_dict)
 
 
-    agent = Agent(model, tokenizer, device)
+    agent = Agent(model, tokenizer, device, enable_tools=True)
     agent.run()
 
 
